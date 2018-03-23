@@ -1,0 +1,255 @@
+subroutine clvinv_ldl(bbe_t_,Ae_t_,AAe_t_,d,logdetAe,idet)
+!************************************************************************
+!* Using LDL decomposition, calcluate the inverse of 6x6 clover term matrix.
+!*  Solve:  F X = 1 -> X = F^-1
+!*
+!*      be : even/odd site inverse clover term matrix (output)
+!*      Ae : even/odd site clover term matrix (input)
+!* logdetAe: log determinant of Ae
+!*    idet : if idet = 1 then calc. logdetAe.
+!*
+!************************************************************************
+  integer, parameter :: NSITE=NTH*NZ*NY*NX
+  complex(8), intent(out)   :: bbe_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  complex(8), intent(in)    ::  Ae_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  complex(8), intent(inout) :: AAe_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  real(8), intent(inout)    ::     d(NTH,NZ,NY,NX)
+  real(8), intent(out) :: logdetAe
+  integer, intent(in) :: idet
+
+  complex(8) :: zunit(CLSP/2,CLSP/2), ctemp
+  complex(8), allocatable ::  ctmp1(:,:,:,:,:,:)
+  integer, parameter :: iout=23
+  integer :: icount
+   integer :: ix,iy,iz,ith,ics,jcs
+
+  allocate(ctmp1(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+
+
+!$OMP PARALLEL PRIVATE(ics,jcs)
+!$OMP DO
+  do jcs=1,CLSP/2
+  do ics=1,CLSP/2
+    zunit(ics,jcs)=(0.0d0,0.0d0)
+  enddo
+  enddo
+!$OMP END DO
+!$OMP DO
+  do ics=1,CLSP/2
+    zunit(ics,ics)=(1.0d0,0.0d0)
+  enddo
+!$OMP END DO
+!$OMP END PARALLEL
+
+!$acc data pcopy(AAe_t_,bbe_t_,d) pcopyin(Ae_t_,zunit)
+
+!*****************
+!* set unit matrix for source b
+!*****************
+  !$acc kernels pcopy(AAe_t_,bbe_t_) pcopyin(Ae_t_)
+  !$acc loop collapse(6) independent gang vector(128) private(ctemp)
+  !$OMP PARALLEL DO PRIVATE(ith,iz,iy,ix,ics,jcs,ctemp) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do ith=1,NTH
+  do jcs=1,CLSP/2
+  do ics=1,CLSP/2
+    ctemp = (0.0d0,0.0d0)
+    if(ics == jcs ) then
+     ctemp = (1.0d0,0.0d0)
+    end if
+
+    bbe_t(ics,jcs,ith,iz,iy,ix)=ctemp
+    AAe_t(ics,jcs,ith,iz,iy,ix)=Ae_t(ics,jcs,ith,iz,iy,ix)
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  !$OMP END PARALLEL DO
+  !$acc end kernels
+
+  call ldl_decomposition(AAe_t_)
+
+!*************************************
+!* calculate det[AAe] when idet = 1.
+!*************************************
+  if (idet.EQ.1) then
+    !$acc kernels pcopy(d) pcopyin(AAe_t_)
+    !$acc loop collapse(4) independent gang vector(128)
+    !$OMP PARALLEL DO PRIVATE(ith,iz,iy,ix) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+      d(ith,iz,iy,ix)=dble(AAe_t(1,1,ith,iz,iy,ix))  &
+ &                   *dble(AAe_t(2,2,ith,iz,iy,ix))  &
+ &                   *dble(AAe_t(3,3,ith,iz,iy,ix))  &
+ &                   *dble(AAe_t(4,4,ith,iz,iy,ix))  &
+ &                   *dble(AAe_t(5,5,ith,iz,iy,ix))  &
+ &                   *dble(AAe_t(6,6,ith,iz,iy,ix))
+    enddo
+    enddo
+    enddo
+    enddo
+    !$OMP END PARALLEL DO
+    !$acc end kernels
+
+    logdetAe=0.0d0
+    !$acc kernels pcopyin(d)
+    !$acc loop collapse(4) independent gang vector(128) reduction(+:logdetAe)
+    !$OMP PARALLEL DO REDUCTION(+:logdetAe) PRIVATE(ith,iz,iy,ix) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+      logdetAe=logdetAe+log(d(ith,iz,iy,ix))
+    enddo
+    enddo
+    enddo
+    enddo
+    !$OMP END PARALLEL DO
+    !$acc end kernels
+    !$acc wait(0)
+#ifndef _singlePU
+    call comlib_sumcast(logdetAe)
+#endif
+  endif
+
+!*************************************
+!* calculate b = A^-1
+!*************************************
+  call ldl_solve(AAe_t_,bbe_t_)
+
+  !$acc end data
+  !$acc wait(0)
+  deallocate(ctmp1)
+
+  return
+  end subroutine
+
+subroutine ldl_solve(a_t_,b_t_)
+!************************************************************************
+!*  Solve A X = B with LDL^+ decomposed matrix A using forward(backward)
+!*  substitution.
+!*
+!*    a : LDL^+ decomposed matrix
+!*    b : source matrix for input, solution matrix for output
+!*
+!************************************************************************
+  integer, parameter :: dp=KIND(1.0d0)
+  complex(8), intent(in) ::    a_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  complex(8), intent(inout) :: b_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+
+  complex(8) :: zsum
+  real(8) :: rtmp
+  integer :: ics,jcs,kcs,ith,iz,iy,ix
+
+  !$acc kernels pcopy(b_t_) pcopyin(a_t_)
+  !$acc loop collapse(4) independent gang vector(128) private(ics,jcs,kcs,zsum,rtmp)
+  !$OMP PARALLEL DO PRIVATE(ith,iz,iy,ix,ics,jcs,kcs,zsum,rtmp) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do ith=1,NTH
+
+    do ics=2,CLSP/2
+      do jcs=1,CLSP/2
+        zsum = b_t(ics,jcs,ith,iz,iy,ix)
+        do kcs=1,ics-1
+          ! 8 flop
+          zsum = zsum - a_t(ics,kcs,ith,iz,iy,ix)*b_t(kcs,jcs,ith,iz,iy,ix)
+        enddo
+        b_t(ics,jcs,ith,iz,iy,ix) = zsum
+      enddo
+    enddo
+
+    ! 1 flop
+    rtmp = 1.0_dp/REAL(a_t(CLSP/2,CLSP/2,ith,iz,iy,ix),kind=dp)
+    do jcs=1,CLSP/2
+      ! 2 flop
+      b_t(CLSP/2,jcs,ith,iz,iy,ix) = b_t(CLSP/2,jcs,ith,iz,iy,ix)*rtmp
+    enddo
+
+    do ics=CLSP/2-1,1,-1
+      ! 1 flop
+      rtmp = 1.0_dp/REAL(a_t(ics,ics,ith,iz,iy,ix),kind=dp)
+      do jcs=1,CLSP/2
+        ! 2 flop
+        zsum = b_t(ics,jcs,ith,iz,iy,ix)*rtmp
+        do kcs=CLSP/2,ics+1,-1
+          ! 8 flop
+          zsum = zsum - conjg(a_t(kcs,ics,ith,iz,iy,ix))  &
+ &                           *b_t(kcs,jcs,ith,iz,iy,ix)
+        enddo
+        b_t(ics,jcs,ith,iz,iy,ix) = zsum
+      enddo
+    enddo
+
+  enddo
+  enddo
+  enddo
+  enddo
+!$OMP END PARALLEL DO
+!$acc end kernels
+
+  return
+end subroutine
+
+subroutine ldl_decomposition(a_t_)
+!************************************************************************
+!* LDL^+ decomposition
+!*
+!*    a : input matrix to be LDL^+ decomposed
+!*
+!************************************************************************
+  complex(8), intent(inout) :: a_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+
+  complex(8) :: zsum
+  real(8) :: rsum
+  integer, parameter :: dp=KIND(1.0d0)
+  integer :: ith,iz,iy,ix,ics,jcs,kcs
+
+  !$acc kernels pcopy(a_t_)
+  !$acc loop collapse(4) independent gang vector(128) private(ics,jcs,kcs,rsum,zsum)
+  !$OMP PARALLEL DO PRIVATE(ith,iz,iy,ix,ics,jcs,kcs,rsum,zsum) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do ith=1,NTH
+    do ics=1,CLSP/2
+      ! 1 flop
+      rsum = REAL(a_t(ics,ics,ith,iz,iy,ix),kind=dp)
+      do kcs=1,ics-1
+        ! 5 flop
+        rsum = rsum - (  real(a_t(ics,kcs,ith,iz,iy,ix),kind=dp)**2    &
+ &                     +aimag(a_t(ics,kcs,ith,iz,iy,ix))**2         )  &
+ &                      *real(a_t(kcs,kcs,ith,iz,iy,ix),kind=dp)
+      enddo
+      a_t(ics,ics,ith,iz,iy,ix) = cmplx(rsum,0.0_dp,kind=dp)
+
+      do jcs=ics+1,CLSP/2
+        zsum = a_t(ics,jcs,ith,iz,iy,ix)
+        do kcs=1,ics-1
+          ! 10 flop
+          zsum = zsum - a_t(ics,kcs,ith,iz,iy,ix)    &
+ &              * conjg(a_t(jcs,kcs,ith,iz,iy,ix))   &
+ &              *  REAL(a_t(kcs,kcs,ith,iz,iy,ix),kind=dp)
+        enddo
+        ! 2 flop
+        zsum = conjg(zsum)/REAL(a_t(ics,ics,ith,iz,iy,ix),kind=dp)
+        a_t(jcs,ics,ith,iz,iy,ix) = zsum
+      enddo
+    enddo
+
+  enddo
+  enddo
+  enddo
+  enddo
+!$OMP END PARALLEL DO
+!$acc end kernels
+
+  return
+end subroutine

@@ -1,0 +1,24 @@
+subroutine xclock(tm,mode)
+  implicit none
+  real(8) :: tm
+  integer :: mode
+  integer :: count, crate
+!  real(8) :: omp_get_wtime
+!  external :: omp_get_wtime
+!  tm = omp_get_wtime()
+#ifndef _singlePU
+!coarray
+!  REAL(8) :: MPI_Wtime
+!  external :: MPI_Wtime
+#endif
+  
+#ifdef _singlePU
+  call system_clock(count=count,count_rate=crate)
+  tm=real(count)/real(crate)
+#else
+!coarray  tm = MPI_Wtime()
+  tm = xmp_wtime()
+#endif
+
+  return
+end subroutine

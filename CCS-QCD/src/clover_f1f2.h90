@@ -1,0 +1,157 @@
+subroutine clover_f1f2(kappa,csw,f1cle_t_,f2cle_t_,ucle_t_)
+!************************************************************************
+!$Id: clover_f1f2.h90,v 1.1 2009/12/02 10:24:23 ishikawa Exp $
+! Calculate clover term matrix in chiral rep.:
+!
+!  kappa   : hopping parameter
+!    csw   : clover coefficient
+!  f1cle   : even/odd site upper-left component of clover term matrix in chiral rep.
+!  f2cle   : even/odd site lower-right component of clover term matrix in chiral rep.
+!   ucle   : even/odd site clover leaf field strength
+!  
+!************************************************************************
+  implicit none
+  real(8), intent(in) :: kappa,csw
+  complex(8), intent(out) :: f1cle_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  complex(8), intent(out) :: f2cle_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX)
+  complex(8), intent(in)::ucle_t(COL,COL,NTH,NZ,NY,NX,NDIM*(NDIM-1)/2)
+!****
+  complex(8) :: zunit(COL,COL),zi
+  parameter (zi=(0.0d0,1.0d0))
+  real(8) :: pcswkappa,mcswkappa
+  integer :: itb,iz,iy,ix,ic,jc
+
+  pcswkappa=+csw*kappa
+  mcswkappa=-csw*kappa
+
+  do jc=1,COL
+  do ic=1,COL
+    zunit(ic,jc)=(0.0d0,0.0d0)
+  enddo
+  enddo
+  do ic=1,COL
+    zunit(ic,ic)=(1.0d0,0.0d0)
+  enddo
+
+!$acc data pcopy(f1cle_t_,f2cle_t_) pcopyin(ucle_t_,zunit)
+
+!************************************************************************
+!
+! f1cl=1-csw*kappa*[(-F23+F14)sig1+(+F13+F24)sig2+(-F12+F34)sig3]
+! f2cl=1-csw*kappa*[(-F23-F14)sig1+(+F13-F24)sig2+(-F12-F34)sig3]
+!
+!  F12 = ucl(1),F13 = ucl(2),F14 = ucl(3)
+!  F23 = ucl(4),F24 = ucl(5),F34 = ucl(6)
+!
+!************************************************************************
+  !$acc kernels pcopy(f1cle_t_) pcopyin(ucle_t_,zunit)
+  !$acc loop collapse(6) independent gang vector(128) 
+  !$OMP PARALLEL DO PRIVATE(itb,iz,iy,ix,ic,jc) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do itb=1,NTH
+  do jc=1,COL     ! 6*2*9 flop
+  do ic=1,COL
+      f1cle_t(ic    ,jc    ,itb,iz,iy,ix)=mcswkappa*(           &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,6)  &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,1)  &
+ &                               )+zunit(ic,jc)
+      f1cle_t(ic+COL,jc+COL,itb,iz,iy,ix)=mcswkappa*(           &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,1)  &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,6)  &
+ &                               )+zunit(ic,jc)
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo! end of do ix,iy,iz, itb
+  !$acc end kernels
+
+  !$acc kernels pcopy(f1cle_t_) pcopyin(ucle_t_)
+  !$acc loop collapse(6) independent gang vector(128) 
+  !$OMP PARALLEL DO PRIVATE(itb,iz,iy,ix,ic,jc) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do itb=1,NTH
+  do jc=1,COL    ! 12*2*9 flop
+  do ic=1,COL
+      f1cle_t(ic    ,jc+COL,itb,iz,iy,ix)=mcswkappa*(              &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,3)     &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,4)     &
+ &                          -zi*( ucle_t(ic,jc,itb,iz,iy,ix,2)     &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,5)  )  &
+ &                               )
+      f1cle_t(ic+COL,jc    ,itb,iz,iy,ix)=mcswkappa*(              &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,3)     &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,4)     &
+ &                          +zi*( ucle_t(ic,jc,itb,iz,iy,ix,2)     &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,5) )   &
+ &                               )
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo! end of do ix,iy,iz, itb
+  !$acc end kernels
+
+  !$acc kernels pcopy(f2cle_t_) pcopyin(ucle_t_,zunit)
+  !$acc loop collapse(6) independent gang vector(128) 
+  !$OMP PARALLEL DO PRIVATE(itb,iz,iy,ix,ic,jc) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do itb=1,NTH
+  do jc=1,COL     ! 12*2*9 flop
+  do ic=1,COL
+      f2cle_t(ic    ,jc    ,itb,iz,iy,ix)=pcswkappa*(           &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,1)  &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,6)  &
+ &                               )+zunit(ic,jc)
+      f2cle_t(ic+COL,jc+COL,itb,iz,iy,ix)=mcswkappa*(           &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,1)  &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,6)  &
+ &                               )+zunit(ic,jc)
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo! end of do ix,iy,iz, itb
+  !$acc end kernels
+
+  !$acc kernels pcopy(f2cle_t_) pcopyin(ucle_t_)
+  !$acc loop collapse(6) independent gang vector(128) 
+  !$OMP PARALLEL DO PRIVATE(itb,iz,iy,ix,ic,jc) COLLAPSE(2)
+  do ix=1,NX
+  do iy=1,NY
+  do iz=1,NZ
+  do itb=1,NTH
+  do jc=1,COL     ! 12*2*9 flop
+  do ic=1,COL
+      f2cle_t(ic    ,jc+COL,itb,iz,iy,ix)=pcswkappa*(              &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,4)     &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,3)     &
+ &                          +zi*( ucle_t(ic,jc,itb,iz,iy,ix,2)     &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,5) )   &
+ &                               )
+      f2cle_t(ic+COL,jc    ,itb,iz,iy,ix)=pcswkappa*(              &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,4)     &
+ &                               +ucle_t(ic,jc,itb,iz,iy,ix,3)     &
+ &                          -zi*( ucle_t(ic,jc,itb,iz,iy,ix,2)     &
+ &                               -ucle_t(ic,jc,itb,iz,iy,ix,5) )   &
+ &                               )
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo! end of do ix,iy,iz, itb
+  !$acc end kernels
+
+  !$acc end data
+  return                                                            
+end subroutine

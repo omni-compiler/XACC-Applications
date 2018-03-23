@@ -1,0 +1,532 @@
+subroutine bicgstab_hmc(tol,iiter,flopcount,stcount, ldcount, &
+   &                        etime,  &
+   &                        kappa,be_t_,xe_t_,ue_t_,uo_t_,ieo,  &
+   &                        fclinve_t_,fclinvo_t_)
+!***********************************************************************
+! $Id: bicgstab_hmc.h90,v 1.1 2009/12/02 10:24:23 ishikawa Exp $
+!
+! BiCGStab
+!  Solve:  D x = b -> x = D^-1 b
+!
+!       tol : BiCGstab stopping condition
+!     iiter : total number of iteration after convergence
+! flopcount : double precision flop count
+! stcount   : double precision store count
+! ldcount   : double precision load count
+!     etime : double precision computation time
+!     kappa : hopping parameter
+!        be : even/odd site source quark field  (ieo=0/1)
+!        xe : even/odd site solution quark field (ieo=0/1)
+!        ue : even/odd site gauge link (ieo=0/1)
+!        uo : odd/even site gauge link (ieo=0/1)
+!       ieo : operation index
+!               ieo=0 for even site
+!               ieo=1 for odd  site
+!   fclinve : even/odd site inverse clover term (ieo=0/1)
+!   fclinvo : odd/even site inverse clover term (ieo=0/1)
+!
+!***********************************************************************
+  implicit none
+!**********
+  real(8), intent(in)  :: tol
+  integer, intent(out) :: iiter
+  real(8), intent(out) :: flopcount, stcount, ldcount, etime
+  real(8), intent(in) :: kappa
+  complex(8), intent(in)   :: be_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1)
+  complex(8), intent(inout):: xe_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1)
+  complex(8), intent(in) :: ue_t(COL,COL,0:NTH,0:NZ1,0:NY1,0:NX1,NDIM)
+  complex(8), intent(in) :: uo_t(COL,COL,0:NTH,0:NZ1,0:NY1,0:NX1,NDIM)
+  integer, intent(in) :: ieo
+  complex(8), intent(in):: fclinve_t(CLSPH,0:NTH,NZ,NY,NX,2)
+  complex(8), intent(in):: fclinvo_t(CLSPH,0:NTH,NZ,NY,NX,2)
+!**********
+  complex(8), allocatable :: rte_t(:,:,:,:,:,:)
+  complex(8), allocatable ::  pe_t(:,:,:,:,:,:)
+  complex(8), allocatable ::  te_t(:,:,:,:,:,:)
+  complex(8), allocatable ::  qe_t(:,:,:,:,:,:)
+  complex(8), allocatable ::  re_t(:,:,:,:,:,:)
+  complex(8), allocatable :: myo_t(:,:,:,:,:,:)
+  integer :: iter,niter,CHKFLG
+  integer :: ix,iy,iz,itb,ic,is,ieoxyz,ioe
+  integer :: ith
+  complex(8) :: rho1,rho0,beta,omega,alpha
+  complex(8) :: ctmp,ctmp0,ctmp1
+  real(8) :: rtmp,rtmp0,rtmp1
+  real(8) :: itmp,itmp0,itmp1
+  real(8) :: rnorm,rsource,precnorm,stol,err
+  real(8) :: etime0,etime1
+  integer, parameter :: iout=_FILE_IO_BICGSTAB_HMC
+
+  allocate(rte_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+  allocate( pe_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+  allocate( te_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+  allocate( qe_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+  allocate( re_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+  allocate(myo_t(COL,SPIN,0:NTH,0:NZ1,0:NY1,0:NX1))
+
+  call xclock(etime0,8)
+  CHKFLG=1
+  flopcount=0.0d0
+  stcount=0.0d0
+  ldcount=0.0d0
+
+  ioe=mod(ieo+1,2)
+
+
+!***********************************
+! precondition (ipre=1)
+!***********************************
+
+  niter = 5000
+
+!$acc data pcopyin(ue_t_,uo_t_,fclinve_t_,fclinvo_t_) &
+!$acc& pcopyin(be_t_) copyout(xe_t_) &
+!$acc& pcreate(xe_t_,rte_t_,pe_t_,te_t_,qe_t_,re_t_,myo_t_)
+
+
+!*******
+!  x = 0
+!  r = b
+!  rt = r
+!  p = r
+!********
+#ifdef _OPENACC
+  !$acc kernels pcopy(xe_t_,re_t_,rte_t_,pe_t_) pcopyin(be_t_) 
+  !$acc loop collapse(6) independent gang vector(128)
+  do is=1,SPIN
+  do ic=1,COL
+  do ix=0,NX1
+  do iy=0,NY1
+  do iz=0,NZ1
+  do ith=0,NTH
+#else
+  !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ith,ic,is) COLLAPSE(2)
+  do ix=0 ,NX1
+  do iy=0 ,NY1
+  do iz=0 ,NZ1
+  do ith=0,NTH
+  do is=1,SPIN
+  do ic=1,COL
+#endif
+       xe_t(ic,is,ith,iz,iy,ix)=(0.0d0,0.0d0)
+       re_t(ic,is,ith,iz,iy,ix)=be_t(ic,is,ith,iz,iy,ix)
+      rte_t(ic,is,ith,iz,iy,ix)=be_t(ic,is,ith,iz,iy,ix)
+       pe_t(ic,is,ith,iz,iy,ix)=be_t(ic,is,ith,iz,iy,ix)
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  !$acc end kernels
+
+!*******
+!  rsource = ||b||
+!********
+  rtmp0=0.0d0
+
+#ifdef _OPENACC
+  !$acc kernels pcopyin(be_t_)
+  !$acc loop collapse(6) independent gang vector(128) reduction(+:rtmp0)
+  do is=1,SPIN
+  do ic=1,COL
+  do ix=1 ,NX
+  do iy=1 ,NY
+  do iz=1 ,NZ
+  do ith=1,NTH
+#else
+  !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is) REDUCTION(+:rtmp0) COLLAPSE(2) 
+  do ix=1 ,NX
+  do iy=1 ,NY
+  do iz=1 ,NZ
+  do ith=1,NTH
+  do is=1,SPIN
+  do ic=1,COL
+#endif
+       ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+       itb = ith - ieoxyz
+#ifdef _SF
+       if (itb < 1) cycle
+#endif
+       rtmp0=rtmp0+ real(be_t(ic,is,itb,iz,iy,ix))**2  &
+ &                +dimag(be_t(ic,is,itb,iz,iy,ix))**2
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  enddo
+  !$acc end kernels
+  !$acc wait(0)
+
+#ifndef _singlePU
+  call comlib_sumcast(rtmp0)
+#endif
+  rsource=sqrt(rtmp0)
+  flopcount=flopcount+QABS2
+  stcount=stcount+COL*SPIN*4
+  ldcount=ldcount+COL*SPIN
+
+  iter=0
+
+!********************
+!  rho0 = <rt|r>
+!  rnorm = |r|/|b|
+!********************
+  rho0 = cmplx(rsource**2,0.0d0,kind=KIND(rho0))
+  rnorm= 1.0d0
+#ifdef _VERBOSE      
+  if (nodeid==0) then
+    if (CHKFLG==1) write(*,'("#",I5," ERR:",E24.16)')iter,rnorm
+    write(iout,'("#",I5," ERR:",E24.16)')iter,rnorm
+  endif
+#endif
+      
+  do while (iter <= niter)
+
+!*************
+!  q = D p
+!*************
+    call mult_mb_pre(kappa,pe_t_,qe_t_,ue_t_,uo_t_,ieo,fclinve_t_,fclinvo_t_,myo_t_)
+    flopcount=flopcount+MULT_MB_PRE
+    ldcount=ldcount+COL*SPIN+COL*COL*4*2+CLSPH*2
+    stcount=stcount+COL*SPIN
+    iter = iter + 1
+
+!*******************
+!  ctmp0 = <rt|q>
+!*******************
+    ctmp0=(0.0d0,0.0d0)
+    rtmp0=0.0d0
+    itmp0=0.0d0
+#ifdef _OPENACC
+    !$acc kernels pcopyin(rte_t_,qe_t_)
+    !$acc loop collapse(6) independent gang vector(128) reduction(+:rtmp0,itmp0) private(ctmp0)
+    do is=1,SPIN
+    do ic=1,COL
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+#else
+    !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is) REDUCTION(+:ctmp0) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+    do is=1,SPIN
+    do ic=1,COL
+#endif
+         ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+         itb=ith-ieoxyz
+#ifdef _OPENACC
+         ctmp0=conjg(rte_t(ic,is,itb,iz,iy,ix))*  &
+   &                  qe_t(ic,is,itb,iz,iy,ix)
+         rtmp0 = rtmp0 +  dble(ctmp0)
+         itmp0 = itmp0 + dimag(ctmp0)
+#else
+         ctmp0=ctmp0 +conjg(rte_t(ic,is,itb,iz,iy,ix))*  &
+   &                         qe_t(ic,is,itb,iz,iy,ix)
+#endif
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    !$acc end kernels
+    !$acc wait(0)
+
+#ifdef _OPENACC
+    ctmp0=dcmplx(rtmp0,itmp0)
+#endif
+#ifndef _singlePU
+  call comlib_sumcast(ctmp0)
+#endif
+    alpha=rho0/ctmp0
+    flopcount=flopcount+QPROD
+    ldcount=ldcount+COL*SPIN*2
+
+!*********************
+! x = x + alpha p
+! r = r - alpha q
+! rtmp0 = |r|
+!**************
+    rtmp0 = 0.0d0
+#ifdef _OPENACC
+    !$acc kernels pcopy(xe_t_,re_t_) pcopyin(pe_t_,qe_t_)
+    !$acc loop collapse(6) independent gang vector(128) reduction(+:rtmp0)
+    do is=1,SPIN
+    do ic=1,COL
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+#else
+    !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is) REDUCTION(+:rtmp0) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+    do is=1,SPIN
+    do ic=1,COL
+#endif
+         ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+         itb=ith-ieoxyz
+         xe_t(ic,is,itb,iz,iy,ix)=xe_t(ic,is,itb,iz,iy,ix)  &
+   &                       +alpha*pe_t(ic,is,itb,iz,iy,ix)
+         re_t(ic,is,itb,iz,iy,ix)=re_t(ic,is,itb,iz,iy,ix)  &
+   &                       -alpha*qe_t(ic,is,itb,iz,iy,ix)
+         rtmp0=rtmp0+ real(re_t(ic,is,itb,iz,iy,ix))**2     &
+   &                +dimag(re_t(ic,is,itb,iz,iy,ix))**2
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    !$acc end kernels
+    !$acc wait(0)
+
+#ifndef _singlePU
+    call comlib_sumcast(rtmp0)
+#endif
+    flopcount=flopcount+QABS2+2*QMULT1C_ACCUM_ADD
+    ldcount=ldcount+COL*SPIN*4
+    stcount=stcount+COL*SPIN*2
+
+    rnorm=sqrt(rtmp0)/rsource
+#ifdef _VERBOSE      
+    if (nodeid==0) then
+      if (CHKFLG==1) write(*,'("#",I5," ERR:",E24.16)')iter,rnorm
+      write(iout,'("#",I5," ERR:",E24.16)')iter,rnorm
+    endif
+#endif
+
+    if ( rnorm <= tol ) then
+      call xclock(etime1,8)
+      if (nodeid == 0) then
+        write(iout,'("BiCGStab iteration converged.")')
+        write(iout,'("#",I5," ERR =",E24.16," ETIME =",E24.16)')iter,rnorm,etime1-etime0
+      endif
+      exit
+    endif
+
+!**************
+!  t = D r
+!**************
+    call mult_mb_pre(kappa,re_t_,te_t_,ue_t_,uo_t_,ieo,fclinve_t_,fclinvo_t_,myo_t_)
+    iter = iter + 1
+    flopcount=flopcount+MULT_MB_PRE
+    ldcount=ldcount+COL*SPIN+COL*COL*4*2+CLSPH*2
+    stcount=stcount+COL*SPIN
+
+!******************
+!  rtmp0 = <t|t>
+!  ctmp0 = <t|r>
+!******************
+    rtmp0=0.0d0
+    ctmp0=(0.0d0,0.0d0)
+    rtmp1=0.0d0
+    itmp1=0.0d0
+#ifdef _OPENACC
+    !$acc kernels pcopyin(te_t_,re_t_)
+    !$acc loop collapse(6) independent gang vector(128) &
+    !$acc& reduction(+:rtmp0,rtmp1,itmp1) private(ctmp0)
+    do is=1,SPIN
+    do ic=1,COL
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+#else
+    !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is) REDUCTION(+:rtmp0,ctmp0) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+    do is=1,SPIN
+    do ic=1,COL
+#endif
+         ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+         itb=ith-ieoxyz
+         rtmp0=rtmp0 + real(te_t(ic,is,itb,iz,iy,ix))**2  &
+   &                 +dimag(te_t(ic,is,itb,iz,iy,ix))**2
+#ifdef _OPENACC
+         ctmp0=conjg(te_t(ic,is,itb,iz,iy,ix))*    &
+   &                 re_t(ic,is,itb,iz,iy,ix)
+         rtmp1 = rtmp1 +  real(ctmp0)
+         itmp1 = itmp1 + dimag(ctmp0)
+#else
+         ctmp0=ctmp0 +conjg(te_t(ic,is,itb,iz,iy,ix))*    &
+   &                        re_t(ic,is,itb,iz,iy,ix)
+#endif
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    !$acc end kernels
+    !$acc wait(0)
+
+#ifdef _OPENACC
+    ctmp0 = dcmplx(rtmp1,itmp1)
+#endif
+#ifndef _singlePU
+    call comlib_sumcast(rtmp0)
+    call comlib_sumcast(ctmp0)
+#endif
+    flopcount=flopcount+QABS2+QPROD
+    ldcount=ldcount+COL*SPIN*3
+
+    omega=ctmp0/rtmp0
+!***********************
+!  x = x + omega r
+!  r = r - omega t
+! rtmp0 = |r|
+! rho1 = <rt|r>
+!***********************
+    rtmp0 = 0.0d0
+    rho1  =(0.0d0,0.0d0)
+    rtmp1=0.0d0
+    itmp1=0.0d0
+#ifdef _OPENACC
+    !$acc kernels pcopy(xe_t_,re_t_) pcopyin(te_t_,rte_t_)
+    !$acc loop collapse(6) independent gang vector(128) &
+    !$acc& reduction(+:rtmp0,rtmp1,itmp1) private(ctmp)
+    do is=1,SPIN
+    do ic=1,COL
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+#else
+    !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is) REDUCTION(+:rtmp0,rho1) COLLAPSE(2)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+    do is=1,SPIN
+    do ic=1,COL
+#endif
+         ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+         itb=ith-ieoxyz
+         xe_t(ic,is,itb,iz,iy,ix)=xe_t(ic,is,itb,iz,iy,ix)   &
+   &                       +omega*re_t(ic,is,itb,iz,iy,ix)
+         re_t(ic,is,itb,iz,iy,ix)=re_t(ic,is,itb,iz,iy,ix)   &
+   &                       -omega*te_t(ic,is,itb,iz,iy,ix)
+         rtmp0=rtmp0  + real(re_t(ic,is,itb,iz,iy,ix))**2    &
+   &                  +dimag(re_t(ic,is,itb,iz,iy,ix))**2
+#ifdef _OPENACC
+         ctmp = conjg(rte_t(ic,is,itb,iz,iy,ix))     &
+   &                  *re_t(ic,is,itb,iz,iy,ix)
+         rtmp1 = rtmp1 +  real(ctmp)
+         itmp1 = itmp1 + dimag(ctmp)
+#else
+         rho1 =rho1 + conjg(rte_t(ic,is,itb,iz,iy,ix))     &
+   &                        *re_t(ic,is,itb,iz,iy,ix)
+#endif
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    !$acc end kernels
+    !$acc wait(0)
+
+#ifdef _OPENACC
+    rho1 = dcmplx(rtmp1,itmp1)
+#endif
+#ifndef _singlePU
+    call comlib_sumcast(rtmp0)
+    call comlib_sumcast(rho1)
+#endif
+    flopcount=flopcount+QABS2+QPROD+2*QMULT1C_ACCUM_ADD
+    ldcount=ldcount+COL*SPIN*4
+    stcount=stcount+COL*SPIN*2
+
+    rnorm=sqrt(rtmp0)/rsource
+#ifdef _VERBOSE      
+    if (nodeid==0) then
+      if (CHKFLG==1) write(*,'("#",I5," ERR:",E24.16)')iter,rnorm
+      write(iout,'("#",I5," ERR:",E24.16)')iter,rnorm
+    endif
+#endif      
+
+    if ( rnorm <= tol ) then
+      call xclock(etime1,8)
+      if (nodeid == 0) then
+        write(iout,'("BiCGStap iteration converged.")')
+        write(iout,'("#",I5," ERR =",E24.16," ETIME =",E24.16)')iter,rnorm,etime1-etime0
+      endif
+      exit
+    endif
+
+    beta = (rho1/rho0)*(alpha/omega)
+    rho0 = rho1
+
+!*************************
+! p=r+beta(p - omega q)
+!*************************
+#ifdef _OPENACC
+    !$acc kernels pcopy(pe_t_) pcopyin(re_t_,qe_t_) pcopyin(beta,omega)
+    !$acc loop collapse(6) independent gang vector(128)
+    do is=1,SPIN
+    do ic=1,COL
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+#else
+    !$OMP PARALLEL DO PRIVATE(ix,iy,iz,ieoxyz,ith,itb,ic,is)
+    do ix=1,NX
+    do iy=1,NY
+    do iz=1,NZ
+    do ith=1,NTH
+    do is=1,SPIN
+    do ic=1,COL
+#endif
+         ieoxyz=mod(ipeo+ix+iy+iz+ieo,2)
+         itb=ith-ieoxyz
+         pe_t(ic,is,itb,iz,iy,ix)=re_t(ic,is,itb,iz,iy,ix)   &
+   &              +beta*(         pe_t(ic,is,itb,iz,iy,ix)   &
+   &                       -omega*qe_t(ic,is,itb,iz,iy,ix) )
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    enddo
+    !$acc end kernels
+    !$acc wait(0)
+
+    flopcount=flopcount+2*QMULT1C_ACCUM_ADD
+    ldcount=ldcount+COL*SPIN*3
+    stcount=stcount+COL*SPIN
+
+  enddo
+
+  !$acc end data
+  !$acc wait(0)
+
+  iiter = iter
+  flopcount=flopcount*dble(NTH*NZ*NY*NX)
+  ldcount=ldcount*dble(NTH*NZ*NY*NX)*2.0d0
+  stcount=stcount*dble(NTH*NZ*NY*NX)*2.0d0
+  call xclock(etime1,8)
+  etime = etime1-etime0
+  deallocate(rte_t_,pe_t_,te_t_,qe_t_,re_t_,myo_t_)
+  if ( iter >= niter ) then
+    call xclock(etime1,8)
+    if (nodeid.EQ.0) then
+      write(iout,'("BiCGStab iteration does not converge.")')
+      write(iout,'("#",I5," ERR =",E24.16," ETIME =",E24.16)')iter,rnorm,etime1-etime0
+    endif
+    stop
+  endif
+
+
+  return
+end subroutine

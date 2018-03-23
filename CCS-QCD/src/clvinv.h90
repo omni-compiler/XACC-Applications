@@ -1,0 +1,113 @@
+subroutine clvinv(kappa,csw,fclinve_t_,fclinvo_t_,ucle_t_,uclo_t_,logdetfcl,idet)
+!***********************************************************************
+!$Id: clvinv.h90,v 1.1 2009/12/02 10:24:23 ishikawa Exp $ 
+! Calculate inverse clover term matrix and determiant:
+!
+!  fclinv = [ 1 - csw kappa/2 sigma_{mu,nu} F_{mu,nu}]^-1
+!
+!  log[det[fcl]]
+!
+!   kappa : hopping parameter
+!     csw : clover coeffcient
+! fclinve : even site inverse clover term matrix (chiral rep. linear storage)
+! fclinvo : odd site inverse clover term matrix (chiral rep. linear storage)
+!    ucle : even site clover leaf
+!    uclo : odd site clover leaf
+! logdetfcl : log of determinat of fcl
+!    idet : if idet=1 then calc logdetfcl
+!
+!  [ 1 - csw kappa/2 sigma_{mu,nu} F_{mu,nu}]^-1
+!
+!
+!  = diag(fclinv(1),fclinv(2)),
+!
+!  where
+!
+!    |   1   2   3   4   5   6  |
+!    |       7   8   9  10  11  |
+!    |          12  13  14  15  |
+!    |              16  17  18  |
+!    |                  19  20  |
+!    |                      21  |
+!
+!  are stored in fclinv(i).
+!
+!***********************************************************************
+  implicit none
+  real(8), intent(in) :: kappa,csw
+  complex(8), intent(out) :: fclinve_t(CLSPH,0:NTH,NZ,NY,NX,2)
+  complex(8), intent(out) :: fclinvo_t(CLSPH,0:NTH,NZ,NY,NX,2)
+  complex(8), intent(in) ::  &
+ &                      ucle_t(COL,COL,NTH,NZ,NY,NX,NDIM*(NDIM-1)/2),  &
+ &                      uclo_t(COL,COL,NTH,NZ,NY,NX,NDIM*(NDIM-1)/2)
+  real(8), intent(out) :: logdetfcl
+  integer, intent(in) :: idet
+!*** work vector
+  complex(8), allocatable ::    f1cl_t(:,:,:,:,:,:)
+  complex(8), allocatable ::    f2cl_t(:,:,:,:,:,:)
+  complex(8), allocatable :: f1clinv_t(:,:,:,:,:,:)
+  complex(8), allocatable :: f2clinv_t(:,:,:,:,:,:)
+  complex(8), allocatable ::  AAe_t(:,:,:,:,:,:)
+  real(8), allocatable :: d(:,:,:,:)
+
+  real(8) :: logdetf1cle,logdetf1clo
+  real(8) :: logdetf2cle,logdetf2clo
+
+  allocate(   f1cl_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+  allocate(   f2cl_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+  allocate(f1clinv_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+  allocate(f2clinv_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+  allocate(AAe_t(CLSP/2,CLSP/2,NTH,NZ,NY,NX))
+  allocate(d(NTH,NZ,NY,NX))
+
+!$acc data pcopy(fclinve_t_,fclinvo_t_,ucle_t_,uclo_t_) pcreate(f1cl_t_,f2cl_t_,f1clinv_t_,f2clinv_t_, AAe_t_,d)
+
+!****************************
+! calc clover term matrix in chiral rep. (even part)
+!
+!  fcl = diag[f1cl,f2cl] = 1 - csw kappa/2 sigma_{mu,nu}F_{mu,nu}
+!
+! solve inverse matrix (even part)
+!
+!****************************
+  call clover_f1f2(kappa,csw,f1cl_t_,f2cl_t_,ucle_t_)
+  call clvinv_ldl(f1clinv_t_,f1cl_t_,AAe_t_,d,logdetf1cle,idet)
+  call clvinv_ldl(f2clinv_t_,f2cl_t_,AAe_t_,d,logdetf2cle,idet)
+
+!****************************
+! chiral full matrix -> chiral linear vector
+!****************************
+   call full2linear_clv(f1clinv_t_,f2clinv_t_,fclinve_t_,0)
+
+!****************************
+! calc clover term matrix in chiral rep. (odd part)
+!
+!  fcl = diag[f1cl,f2cl] = 1 - csw kappa/2 sigma_{mu,nu}F_{mu,nu}
+!
+! solve inverse matrix
+!
+!****************************
+  call clover_f1f2(kappa,csw,f1cl_t_,f2cl_t_,uclo_t_)
+  call clvinv_ldl(f1clinv_t_,f1cl_t_,AAe_t_,d,logdetf1clo,idet)
+  call clvinv_ldl(f2clinv_t_,f2cl_t_,AAe_t_,d,logdetf2clo,idet)
+
+
+!****************************
+! chiral full matrix -> chiral linear vector
+!****************************
+   call full2linear_clv(f1clinv_t_,f2clinv_t_,fclinvo_t_,1)
+
+  if (idet.EQ.1) then
+    logdetfcl=logdetf1cle+  &
+ &            logdetf2cle+  &
+ &            logdetf1clo+  &
+ &            logdetf2clo
+  endif
+
+!$acc end data
+!$acc wait(0)
+
+  deallocate(f1clinv_t_,f2clinv_t_,f1cl_t_,f2cl_t_,AAe_t_, d)
+
+  return
+end subroutine

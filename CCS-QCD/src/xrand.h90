@@ -1,0 +1,13 @@
+subroutine xrand(ir,r)
+  implicit none
+  integer, intent(inout) :: ir
+  real(8), intent(out) :: r
+  integer, parameter :: NXT=48828125
+
+  ir=ir*NXT
+  ir=IAND(ir, 2147483647)
+  r =DBLE(ir)/2147483647
+
+  return
+end subroutine
+
